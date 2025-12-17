@@ -1,8 +1,9 @@
 import sys
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 import openmdao.api as om
 import pycycle.api as pyc
+import traceback
 
 # ==========================================
 # PART 1: MAP & DATA SETUP
@@ -13,21 +14,23 @@ try:
     # Try the map from your example
     from pycycle.maps.lpt2269 import LPT2269
     TurbineMap = LPT2269
+    MAP_STATUS = "Using LPT2269 Map"
 except ImportError:
     # Fallback to standard map if 2269 is missing
     print("LPT2269 map not found, using LPT22 fallback.")
     from pycycle.maps.lpt22 import LPT22
     TurbineMap = LPT22
+    MAP_STATUS = "Using LPT22 (Fallback) Map"
 
 from pycycle.maps.axi5 import AXI5
 
 # ==========================================
-# PART 2: THE PHYSICS ENGINE (Your Code Adapted)
+# PART 2: THE PHYSICS ENGINE
 # ==========================================
 
 class Turbojet(pyc.Cycle):
     def setup(self):
-        # --- Options from your snippet ---
+        # --- Options ---
         USE_TABULAR = True
         if USE_TABULAR: 
             self.options['thermo_method'] = 'TABULAR'
@@ -54,7 +57,7 @@ class Turbojet(pyc.Cycle):
         self.add_subsystem('turb', pyc.Turbine(map_data=TurbineMap),
                            promotes_inputs=['Nmech'])
         
-        self.add_subsystem('nozz', pyc.Nozzle(nozzType='CD', lossCoef='Cv'))
+        self.add_subsystem('nozzle', pyc.Nozzle(nozzType='CD', lossCoef='Cv'))
         self.add_subsystem('shaft', pyc.Shaft(num_ports=2), promotes_inputs=['Nmech'])
         self.add_subsystem('perf', pyc.Performance(num_nozzles=1, num_burners=1))
 
@@ -63,21 +66,21 @@ class Turbojet(pyc.Cycle):
         self.pyc_connect_flow('inlet.Fl_O', 'comp.Fl_I')
         self.pyc_connect_flow('comp.Fl_O', 'burner.Fl_I')
         self.pyc_connect_flow('burner.Fl_O', 'turb.Fl_I')
-        self.pyc_connect_flow('turb.Fl_O', 'nozz.Fl_I')
+        self.pyc_connect_flow('turb.Fl_O', 'nozzle.Fl_I')
 
         # --- Connect Mechanical ---
         self.connect('comp.trq', 'shaft.trq_0')
         self.connect('turb.trq', 'shaft.trq_1')
 
         # --- Connect Environment ---
-        self.connect('fc.Fl_O:stat:P', 'nozz.Ps_exhaust')
+        self.connect('fc.Fl_O:stat:P', 'nozzle.Ps_exhaust')
 
         # --- Performance Connections ---
         self.connect('inlet.Fl_O:tot:P', 'perf.Pt2')
         self.connect('comp.Fl_O:tot:P', 'perf.Pt3')
         self.connect('burner.Wfuel', 'perf.Wfuel_0')
         self.connect('inlet.F_ram', 'perf.ram_drag')
-        self.connect('nozz.Fg', 'perf.Fg_0')
+        self.connect('nozzle.Fg', 'perf.Fg_0')
 
         # --- Balances (Design Mode Only for Parametric GUI) ---
         balance = self.add_subsystem('balance', om.BalanceComp())
@@ -118,56 +121,74 @@ class Turbojet(pyc.Cycle):
 class App:
     def __init__(self, root):
         self.root = root
-        self.root.title("PyCycle Real Parametric Analysis")
-        self.root.geometry("1100x700")
+        self.root.title("PyCycle Turbojet Sizing Tool (Design Point)")
+        self.root.geometry("800x800")
         
-        # Initialize Problem
-        self.init_problem()
-        
-        # --- UI Layout ---
         style = ttk.Style()
         style.theme_use('clam')
+        style.configure('Header.TLabel', font=('Segoe UI', 14, 'bold'))
+
+        # Header
+        header_frame = ttk.Frame(root)
+        header_frame.pack(pady=15)
+        ttk.Label(header_frame, text="Turbojet Sizing & Design", style='Header.TLabel').pack()
+        ttk.Label(header_frame, text=MAP_STATUS, font=('Segoe UI', 9, 'italic')).pack()
         
-        main_frame = ttk.Frame(root)
-        main_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        # Initialize Problem (Early setup to ensure defaults)
+        self.init_problem()
         
-        # Left Sidebar (Inputs)
-        left_col = ttk.Frame(main_frame, width=300)
-        left_col.pack(side="left", fill="y", padx=10)
+        # --- Tabs ---
+        self.nb = ttk.Notebook(root)
+        self.nb.pack(fill=tk.BOTH, expand=False, padx=10, pady=5)
         
-        # Right Area (Outputs)
-        right_col = ttk.Frame(main_frame)
-        right_col.pack(side="right", fill="both", expand=True)
+        # Tab 1: Requirements (Sizing Targets)
+        tab_req = ttk.Frame(self.nb, padding=15)
+        self.nb.add(tab_req, text="Sizing Targets")
         
-        # --- Variables ---
-        self.vars = {
-            'alt': tk.DoubleVar(value=0.0),       # ft
-            'mn': tk.DoubleVar(value=0.001),      # Mach (Design)
-            'fn_req': tk.DoubleVar(value=11800.0),# lbf
-            't4': tk.DoubleVar(value=2370.0),     # degR
-            'pr_comp': tk.DoubleVar(value=13.5),  # Pressure Ratio
-            'eff_comp': tk.DoubleVar(value=0.83),
-            'eff_turb': tk.DoubleVar(value=0.86)
-        }
+        self.fn_var = tk.DoubleVar(value=11800.0)
+        self.t4_var = tk.DoubleVar(value=2370.0)
         
-        # --- Controls ---
-        ttk.Label(left_col, text="Design Parameters", font=("Arial", 14, "bold")).pack(pady=10)
+        self.create_input(tab_req, "Target Thrust (lbf):", self.fn_var, 0)
+        self.create_input(tab_req, "Target TIT (Rankine):", self.t4_var, 1)
+
+        # Tab 2: Cycle Parameters
+        tab_cyc = ttk.Frame(self.nb, padding=15)
+        self.nb.add(tab_cyc, text="Cycle Params")
         
-        self.add_slider(left_col, "Altitude (ft)", 'alt', 0, 40000, 1000)
-        self.add_slider(left_col, "Mach Number", 'mn', 0.001, 1.5, 0.05)
-        self.add_slider(left_col, "Target Thrust (lbf)", 'fn_req', 1000, 30000, 500)
-        self.add_slider(left_col, "TIT (Rankine)", 't4', 1800, 3200, 50)
-        self.add_slider(left_col, "Compressor PR", 'pr_comp', 5.0, 30.0, 0.5)
-        self.add_slider(left_col, "Comp Efficiency", 'eff_comp', 0.75, 0.95, 0.01)
-        self.add_slider(left_col, "Turb Efficiency", 'eff_turb', 0.75, 0.95, 0.01)
+        self.alt_var = tk.DoubleVar(value=0.0)
+        self.mn_var = tk.DoubleVar(value=0.001)
+        self.pr_var = tk.DoubleVar(value=13.5)
         
-        # --- Output Text ---
-        ttk.Label(right_col, text="Design Point Results", font=("Arial", 14, "bold")).pack(pady=10)
-        self.text_out = tk.Text(right_col, font=("Courier", 10), bg="#f4f4f4")
-        self.text_out.pack(fill="both", expand=True)
+        self.create_input(tab_cyc, "Altitude (ft):", self.alt_var, 0)
+        self.create_input(tab_cyc, "Mach Number:", self.mn_var, 1)
+        self.create_input(tab_cyc, "Compressor PR:", self.pr_var, 2)
+
+        # Tab 3: Component Quality
+        tab_eff = ttk.Frame(self.nb, padding=15)
+        self.nb.add(tab_eff, text="Efficiencies")
         
-        # Initial Run
-        self.run_cycle()
+        self.eff_comp_var = tk.DoubleVar(value=0.83)
+        self.eff_turb_var = tk.DoubleVar(value=0.86)
+        self.rec_var = tk.DoubleVar(value=0.99)
+        self.burner_dp_var = tk.DoubleVar(value=0.03)
+        self.nozz_cv_var = tk.DoubleVar(value=0.99)
+        
+        self.create_input(tab_eff, "Compressor Poly Eff:", self.eff_comp_var, 0)
+        self.create_input(tab_eff, "Turbine Poly Eff:", self.eff_turb_var, 1)
+        self.create_input(tab_eff, "Inlet Recovery:", self.rec_var, 2)
+        self.create_input(tab_eff, "Burner dP/P:", self.burner_dp_var, 3)
+        self.create_input(tab_eff, "Nozzle Cv:", self.nozz_cv_var, 4)
+
+        # Run Button
+        ttk.Button(root, text="RUN SIZING", command=self.run_cycle).pack(pady=15, ipadx=10, ipady=2)
+        
+        # Output
+        self.output_text = tk.Text(root, height=18, width=80, state='disabled', font=('Consolas', 9), bg="#f8f8f8")
+        self.output_text.pack(padx=10, pady=5, fill=tk.BOTH, expand=True)
+
+        # Status
+        self.status_var = tk.StringVar(value="Ready")
+        ttk.Label(root, textvariable=self.status_var, relief=tk.SUNKEN, anchor='w').pack(side=tk.BOTTOM, fill=tk.X)
 
     def init_problem(self):
         self.prob = om.Problem()
@@ -175,55 +196,37 @@ class App:
         self.prob.setup()
         
         # Set sensible defaults to ensure first run works
-        self.prob.set_val('fc.alt', 0, units='ft')
-        self.prob.set_val('fc.MN', 0.001)
-        self.prob.set_val('balance.Fn_target', 11800.0, units='lbf')
-        self.prob.set_val('balance.T4_target', 2370.0, units='degR')
-        self.prob.set_val('comp.PR', 13.5)
-        self.prob.set_val('comp.eff', 0.83)
-        self.prob.set_val('turb.eff', 0.86)
-        
         # Initial Guesses (Crucial for OpenMDAO)
         self.prob['balance.FAR'] = 0.0175
         self.prob['balance.W'] = 168.0
         self.prob['balance.turb_PR'] = 4.0
 
-    def add_slider(self, parent, label, key, min_v, max_v, step):
-        frame = ttk.Frame(parent)
-        frame.pack(fill="x", pady=5)
-        
-        lbl_frame = ttk.Frame(frame)
-        lbl_frame.pack(fill="x")
-        ttk.Label(lbl_frame, text=label).pack(side="left")
-        val_lbl = ttk.Label(lbl_frame, text=f"{self.vars[key].get():.2f}")
-        val_lbl.pack(side="right")
-        
-        def on_slide(v):
-            val = float(v)
-            # Snap to step
-            val = round(val / step) * step
-            self.vars[key].set(val)
-            val_lbl.config(text=f"{val:.2f}")
-            # Trigger analysis
-            self.run_cycle()
-            
-        s = ttk.Scale(frame, from_=min_v, to=max_v, orient="horizontal", command=on_slide)
-        s.set(self.vars[key].get())
-        s.pack(fill="x")
+    def create_input(self, parent, label, variable, row):
+        ttk.Label(parent, text=label).grid(row=row, column=0, sticky=tk.W, pady=8)
+        ttk.Entry(parent, textvariable=variable, width=15).grid(row=row, column=1, sticky=tk.E, pady=8, padx=15)
 
     def run_cycle(self):
+        self.status_var.set("Sizing Engine...")
+        self.root.update()
+        self.output_text.configure(state='normal')
+        self.output_text.delete(1.0, tk.END)
+        self.output_text.configure(state='disabled')
+        
         p = self.prob
-        v = self.vars
         
         try:
             # 1. Update Inputs
-            p.set_val('fc.alt', v['alt'].get(), units='ft')
-            p.set_val('fc.MN', v['mn'].get())
-            p.set_val('balance.Fn_target', v['fn_req'].get(), units='lbf')
-            p.set_val('balance.T4_target', v['t4'].get(), units='degR')
-            p.set_val('comp.PR', v['pr_comp'].get())
-            p.set_val('comp.eff', v['eff_comp'].get())
-            p.set_val('turb.eff', v['eff_turb'].get())
+            p.set_val('fc.alt', self.alt_var.get(), units='ft')
+            p.set_val('fc.MN', self.mn_var.get())
+            p.set_val('balance.Fn_target', self.fn_var.get(), units='lbf')
+            p.set_val('balance.T4_target', self.t4_var.get(), units='degR')
+            p.set_val('comp.PR', self.pr_var.get())
+            p.set_val('comp.eff', self.eff_comp_var.get())
+            p.set_val('turb.eff', self.eff_turb_var.get())
+            
+            p.set_val('inlet.ram_recovery', self.rec_var.get())
+            p.set_val('burner.dPqP', self.burner_dp_var.get())
+            p.set_val('nozzle.Cv', self.nozz_cv_var.get())
             
             # 2. Run
             p.run_model()
@@ -242,41 +245,45 @@ class App:
             
             # 4. Format Output
             out = f"""
-PYCYCLE PARAMETRIC ANALYSIS
-===========================
+=== SIZING RESULTS (DESIGN POINT) ===
 STATUS: CONVERGED
 
-INPUTS
-------
-Altitude:    {v['alt'].get():.0f} ft
-Mach:        {v['mn'].get():.3f}
-Target Thr:  {v['fn_req'].get():.0f} lbf
-Target TIT:  {v['t4'].get():.0f} R
+INPUT REQUIREMENTS
+------------------
+Target Thrust:  {self.fn_var.get():.0f} lbf
+Target TIT:     {self.t4_var.get():.0f} R
+Flight Cond:    Mach {self.mn_var.get():.3f} @ {self.alt_var.get():.0f} ft
 
-SIZING RESULTS (DESIGN POINT)
+SIZED PARAMETERS (CALCULATED)
 -----------------------------
-Mass Flow Req:  {W_air:.2f} lbm/s  <-- Sized to meet Thrust
-Fuel Flow:      {W_fuel:.1f} lbm/h
+Mass Flow Req:  {W_air:.2f} lbm/s  <-- SIZED
+Turbine PR:     {Turb_PR:.3f}      <-- BALANCED
+
+PERFORMANCE METRICS
+-------------------
+Net Thrust:     {Fn:.2f} lbf
 TSFC:           {tsfc:.4f}
-
-CYCLE DETAILS
--------------
+Fuel Flow:      {W_fuel:.1f} lbm/h
 Overall PR:     {OPR:.2f}
-Comp Exit Temp: {T3:.1f} R
-Comp Exit Pres: {P3:.2f} psi
 
-Turbine PR:     {Turb_PR:.3f}      <-- Balanced for Work
-Turb Exit Temp: {T5:.1f} R
+COMPONENT DETAILS
+-----------------
+Comp Exit:      {P3:.1f} psi / {T3:.1f} R
+Turb Exit:      {T5:.1f} R
 """
-            self.text_out.delete(1.0, tk.END)
-            self.text_out.insert(tk.END, out)
-            self.text_out.config(fg="black")
+            self.display_output(out)
+            self.status_var.set("Success")
             
         except Exception as e:
-            self.text_out.delete(1.0, tk.END)
-            msg = f"SOLVER ERROR: \n{str(e)}\n\nThe engine could not balance.\nPossible causes:\n1. TIT too low for Pressure Ratio\n2. Thrust target impossible for size"
-            self.text_out.insert(tk.END, msg)
-            self.text_out.config(fg="red")
+            msg = f"SOLVER ERROR: \n{str(e)}\n\n{traceback.format_exc()}"
+            self.display_output(msg)
+            self.status_var.set("Error")
+
+    def display_output(self, text):
+        self.output_text.configure(state='normal')
+        self.output_text.delete(1.0, tk.END)
+        self.output_text.insert(tk.END, text)
+        self.output_text.configure(state='disabled')
 
 if __name__ == "__main__":
     root = tk.Tk()

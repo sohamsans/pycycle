@@ -1,0 +1,5 @@
+openmdao>=3.0.0
+pycycle>=3.0.0
+numpy
+scipy
+matplotlib

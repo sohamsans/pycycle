@@ -3,6 +3,7 @@ from tkinter import ttk, messagebox
 import openmdao.api as om
 import pycycle.api as pyc
 import sys
+import traceback
 
 # --- PYCYCLE TURBOJET MODEL CLASS ---
 class TurbojetModel(pyc.Cycle):
@@ -74,85 +75,79 @@ class TurbojetModel(pyc.Cycle):
 class TurbojetApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("PyCycle Turbojet Simulator")
-        self.root.geometry("600x850") # Increased height for more options
-        self.root.configure(bg="#f0f0f0")
-
-        # Styling
+        self.root.title("PyCycle Parametric Turbojet Simulator")
+        self.root.geometry("700x800")
+        
         style = ttk.Style()
         style.theme_use('clam')
-        style.configure('TLabel', background="#f0f0f0", font=('Arial', 10))
-        style.configure('TButton', font=('Arial', 10, 'bold'))
-        style.configure('Header.TLabel', font=('Arial', 14, 'bold'), foreground="#333")
-        style.configure('SubHeader.TLabel', font=('Arial', 11, 'bold', 'underline'), foreground="#555")
+        style.configure('Header.TLabel', font=('Segoe UI', 14, 'bold'))
 
         # Header
-        ttk.Label(root, text="Parametric Turbojet Cycle", style='Header.TLabel').pack(pady=15)
+        ttk.Label(root, text="Parametric Turbojet Analysis", style='Header.TLabel').pack(pady=15)
 
-        # --- Main Input Frame ---
-        input_frame = ttk.LabelFrame(root, text="Cycle Inputs", padding="15")
-        input_frame.pack(fill=tk.BOTH, expand=False, padx=20)
+        # Tabs
+        self.nb = ttk.Notebook(root)
+        self.nb.pack(fill=tk.BOTH, expand=False, padx=10, pady=5)
 
-        # Design Variables
+        # --- Tab 1: Flight Conditions ---
+        tab_flight = ttk.Frame(self.nb, padding=15)
+        self.nb.add(tab_flight, text="Flight Data")
+
         self.mach_var = tk.DoubleVar(value=0.8)
         self.alt_var = tk.DoubleVar(value=35000.0)
+
+        self.create_input(tab_flight, "Mach Number:", self.mach_var, 0)
+        self.create_input(tab_flight, "Altitude (ft):", self.alt_var, 1)
+        
+        # --- Tab 2: Cycle Design ---
+        tab_cycle = ttk.Frame(self.nb, padding=15)
+        self.nb.add(tab_cycle, text="Cycle Design")
+
         self.cpr_var = tk.DoubleVar(value=20.0)
         self.t4_var = tk.DoubleVar(value=3000.0)
-        
-        # Efficiency/Loss Variables (Defaults set to Ideal)
-        self.comp_eff_var = tk.DoubleVar(value=1.0)
-        self.turb_eff_var = tk.DoubleVar(value=1.0)
-        self.inlet_rec_var = tk.DoubleVar(value=1.0)
-        self.nozz_cv_var = tk.DoubleVar(value=1.0)
-        self.burner_loss_var = tk.DoubleVar(value=0.0)
-        self.shaft_loss_var = tk.DoubleVar(value=0.0)
 
-        # Layout - Design Points
-        row = 0
-        ttk.Label(input_frame, text="Design Point", style='SubHeader.TLabel').grid(row=row, column=0, sticky=tk.W, pady=(0,5), columnspan=2)
-        row += 1
-        self.create_input(input_frame, "Mach Number:", self.mach_var, row)
-        row += 1
-        self.create_input(input_frame, "Altitude (ft):", self.alt_var, row)
-        row += 1
-        self.create_input(input_frame, "Compressor Pressure Ratio:", self.cpr_var, row)
-        row += 1
-        self.create_input(input_frame, "Burner Exit Temp (degR):", self.t4_var, row)
-        
-        # Layout - Component Efficiencies
-        row += 1
-        ttk.Label(input_frame, text="Component Quality (1.0 = Ideal)", style='SubHeader.TLabel').grid(row=row, column=0, sticky=tk.W, pady=(15,5), columnspan=2)
-        row += 1
-        self.create_input(input_frame, "Inlet Recovery (0-1):", self.inlet_rec_var, row)
-        row += 1
-        self.create_input(input_frame, "Compressor Poly Eff (0-1):", self.comp_eff_var, row)
-        row += 1
-        self.create_input(input_frame, "Burner Press Loss (dP/P):", self.burner_loss_var, row)
-        row += 1
-        self.create_input(input_frame, "Turbine Poly Eff (0-1):", self.turb_eff_var, row)
-        row += 1
-        self.create_input(input_frame, "Nozzle Velocity Coeff:", self.nozz_cv_var, row)
-        row += 1
-        self.create_input(input_frame, "Shaft Mech Loss (frac):", self.shaft_loss_var, row)
-        
+        self.create_input(tab_cycle, "Compressor Pressure Ratio:", self.cpr_var, 0)
+        self.create_input(tab_cycle, "Burner Exit Temp (degR):", self.t4_var, 1)
+
+        # --- Tab 3: Component Efficiencies ---
+        tab_eff = ttk.Frame(self.nb, padding=15)
+        self.nb.add(tab_eff, text="Efficiencies")
+
+        self.inlet_rec_var = tk.DoubleVar(value=0.98)
+        self.comp_eff_var = tk.DoubleVar(value=0.85)
+        self.burner_loss_var = tk.DoubleVar(value=0.03)
+        self.turb_eff_var = tk.DoubleVar(value=0.90)
+        self.nozz_cv_var = tk.DoubleVar(value=0.98)
+        self.shaft_loss_var = tk.DoubleVar(value=0.02)
+
+        self.create_input(tab_eff, "Inlet Recovery (0-1):", self.inlet_rec_var, 0)
+        self.create_input(tab_eff, "Compressor Poly Eff (0-1):", self.comp_eff_var, 1)
+        self.create_input(tab_eff, "Burner Press Loss (dP/P):", self.burner_loss_var, 2)
+        self.create_input(tab_eff, "Turbine Poly Eff (0-1):", self.turb_eff_var, 3)
+        self.create_input(tab_eff, "Nozzle Velocity Coeff:", self.nozz_cv_var, 4)
+        self.create_input(tab_eff, "Shaft Mech Loss (frac):", self.shaft_loss_var, 5)
+
         # Run Button
-        ttk.Button(root, text="Run Simulation", command=self.run_simulation).pack(pady=15)
+        ttk.Button(root, text="RUN SIMULATION", command=self.run_simulation).pack(pady=10, ipadx=10, ipady=2)
 
         # Output Frame
-        self.output_text = tk.Text(root, height=18, width=70, state='disabled', font=('Consolas', 10))
-        self.output_text.pack(padx=20, pady=5)
+        self.output_text = tk.Text(root, height=18, width=75, state='disabled', font=('Consolas', 9), bg="#f8f8f8")
+        self.output_text.pack(padx=10, pady=5, fill=tk.BOTH, expand=True)
         
         # Status
         self.status_var = tk.StringVar(value="Ready")
-        ttk.Label(root, textvariable=self.status_var, relief=tk.SUNKEN).pack(side=tk.BOTTOM, fill=tk.X)
+        ttk.Label(root, textvariable=self.status_var, relief=tk.SUNKEN, anchor='w').pack(side=tk.BOTTOM, fill=tk.X)
 
     def create_input(self, parent, label, variable, row):
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky=tk.W, pady=2)
-        ttk.Entry(parent, textvariable=variable, width=15).grid(row=row, column=1, sticky=tk.E, pady=2, padx=10)
+        ttk.Label(parent, text=label).grid(row=row, column=0, sticky=tk.W, pady=8)
+        ttk.Entry(parent, textvariable=variable, width=15).grid(row=row, column=1, sticky=tk.E, pady=8, padx=15)
 
     def run_simulation(self):
         self.status_var.set("Running...")
         self.root.update()
+        self.output_text.configure(state='normal')
+        self.output_text.delete(1.0, tk.END)
+        self.output_text.configure(state='disabled')
 
         try:
             # 1. Setup OpenMDAO Problem
@@ -212,29 +207,28 @@ class TurbojetApp:
             isp = fn / (w_fuel / 3600.0) if w_fuel > 0 else 0.0
 
             # 5. Display
-            res = f"--- SIMULATION RESULTS ---\n"
+            res = f"=== SIMULATION RESULTS ===\n"
             res += f"Net Thrust (Fn):      {fn:.2f} lbf\n"
             res += f"TSFC:                 {tsfc:.4f} (lbm/h)/lbf\n"
             res += f"Specific Impulse:     {isp:.2f} s\n"
-            res += f"-------------------------\n"
+            res += f"--------------------------\n"
             res += f"Compressor PR:        {self.cpr_var.get():.2f}\n"
-            res += f"Compressor Efficiency:{self.comp_eff_var.get():.2f}\n"
             res += f"Compressor Exit P3:   {p3:.2f} psi\n"
             res += f"Compressor Exit T3:   {t3:.2f} degR\n"
-            res += f"-------------------------\n"
+            res += f"--------------------------\n"
             res += f"Turbine Inlet T4:     {t4:.2f} degR\n"
             res += f"Turbine Exit T5:      {t5:.2f} degR\n"
             res += f"Turbine Exit P5:      {p5:.2f} psi\n"
             res += f"Turbine PR:           {prob.get_val('turb.PR')[0]:.3f}\n"
-            res += f"-------------------------\n"
+            res += f"--------------------------\n"
             res += f"Fuel-Air Ratio:       {far:.5f}\n"
             res += f"Mass Flow:            {m_dot:.2f} lbm/s\n"
+            res += f"Flight Speed:         {v_flight:.1f} ft/s\n"
             
             self.display_output(res)
             self.status_var.set("Success")
 
         except Exception as e:
-            import traceback
             err_msg = f"Error running simulation:\n{str(e)}\n\n{traceback.format_exc()}"
             self.display_output(err_msg)
             self.status_var.set("Error")

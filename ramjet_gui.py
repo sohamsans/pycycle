@@ -3,6 +3,7 @@ from tkinter import ttk, messagebox
 import openmdao.api as om
 import pycycle.api as pyc
 import sys
+import traceback
 
 # --- PYCYCLE RAMJET MODEL CLASS ---
 class RamjetModel(pyc.Cycle):
@@ -34,7 +35,6 @@ class RamjetModel(pyc.Cycle):
 
         # 2. Add Solver/Balance for T4 Control
         # FIX: We vary Fuel-Air Ratio (FAR) to achieve the target T4.
-        # The Combustor takes FAR as input and calculates resulting Wfuel and T4.
         balance = self.add_subsystem('balance', om.BalanceComp())
         
         # Balance config: Vary 'FAR' (unitless) until LHS (Temp) equals RHS (Target Temp)
@@ -62,51 +62,75 @@ class RamjetModel(pyc.Cycle):
 class RamjetApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("PyCycle Ideal Ramjet Simulator")
-        self.root.geometry("600x700")
-        self.root.configure(bg="#f0f0f0")
-
+        self.root.title("PyCycle Parametric Ramjet Simulator")
+        self.root.geometry("650x750")
+        
+        # Apply a theme
         style = ttk.Style()
         style.theme_use('clam')
-        style.configure('TLabel', background="#f0f0f0", font=('Arial', 10))
-        style.configure('TButton', font=('Arial', 10, 'bold'))
-        style.configure('Header.TLabel', font=('Arial', 14, 'bold'), foreground="#333")
-
+        
+        # Fonts
+        style.configure('Header.TLabel', font=('Segoe UI', 14, 'bold'))
+        style.configure('SubHeader.TLabel', font=('Segoe UI', 10, 'bold'))
+        
         # Header
-        ttk.Label(root, text="Ideal Parametric Ramjet", style='Header.TLabel').pack(pady=15)
+        ttk.Label(root, text="Ramjet Cycle Analysis", style='Header.TLabel').pack(pady=15)
 
-        # Input Frame
-        input_frame = ttk.LabelFrame(root, text="Design Inputs", padding="20")
-        input_frame.pack(fill=tk.BOTH, expand=False, padx=20)
+        # Main Content Area
+        main_frame = ttk.Frame(root)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=5)
 
-        # Variables
+        # Notebook (Tabs)
+        self.nb = ttk.Notebook(main_frame)
+        self.nb.pack(fill=tk.X, expand=False, pady=(0, 10))
+        
+        # --- TAB 1: Flight Conditions ---
+        tab_fc = ttk.Frame(self.nb, padding=15)
+        self.nb.add(tab_fc, text="Flight Conditions")
+        
         self.mach_var = tk.DoubleVar(value=3.0)
         self.alt_var = tk.DoubleVar(value=30000.0) # ft
         self.t4_var = tk.DoubleVar(value=3500.0)   # Rankine
         
-        # Inputs
-        self.create_input(input_frame, "Mach Number:", self.mach_var, 0)
-        self.create_input(input_frame, "Altitude (ft):", self.alt_var, 1)
-        self.create_input(input_frame, "Burner Exit Temp (degR):", self.t4_var, 2)
+        self.create_input(tab_fc, "Mach Number:", self.mach_var, 0)
+        self.create_input(tab_fc, "Altitude (ft):", self.alt_var, 1)
+        self.create_input(tab_fc, "Target T4 (degR):", self.t4_var, 2)
         
+        # --- TAB 2: Component Performance ---
+        tab_comp = ttk.Frame(self.nb, padding=15)
+        self.nb.add(tab_comp, text="Component Specs")
+        
+        self.rec_var = tk.DoubleVar(value=1.0)
+        self.nozz_cv_var = tk.DoubleVar(value=0.98)
+        self.burner_dp_var = tk.DoubleVar(value=0.03)
+        
+        self.create_input(tab_comp, "Inlet Recovery (0-1):", self.rec_var, 0)
+        self.create_input(tab_comp, "Burner dP/P Loss:", self.burner_dp_var, 1)
+        self.create_input(tab_comp, "Nozzle Cv (Velocity Coeff):", self.nozz_cv_var, 2)
+
         # Run Button
-        ttk.Button(root, text="Run Simulation", command=self.run_simulation).pack(pady=15)
+        ttk.Button(root, text="RUN SIMULATION", command=self.run_simulation).pack(pady=5, ipadx=10, ipady=2)
 
         # Output Frame
-        self.output_text = tk.Text(root, height=20, width=65, state='disabled', font=('Consolas', 10))
-        self.output_text.pack(padx=20, pady=5)
+        self.output_text = tk.Text(root, height=18, width=70, state='disabled', font=('Consolas', 9), bg="#f8f8f8")
+        self.output_text.pack(padx=15, pady=10, fill=tk.BOTH, expand=True)
         
-        # Status
+        # Status Bar
         self.status_var = tk.StringVar(value="Ready")
-        ttk.Label(root, textvariable=self.status_var, relief=tk.SUNKEN).pack(side=tk.BOTTOM, fill=tk.X)
+        stat_bar = ttk.Label(root, textvariable=self.status_var, relief=tk.SUNKEN, anchor='w')
+        stat_bar.pack(side=tk.BOTTOM, fill=tk.X)
 
     def create_input(self, parent, label, variable, row):
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky=tk.W, pady=5)
-        ttk.Entry(parent, textvariable=variable, width=15).grid(row=row, column=1, sticky=tk.E, pady=5, padx=10)
+        ttk.Label(parent, text=label).grid(row=row, column=0, sticky=tk.W, pady=8)
+        e = ttk.Entry(parent, textvariable=variable, width=15)
+        e.grid(row=row, column=1, sticky=tk.E, pady=8, padx=15)
 
     def run_simulation(self):
         self.status_var.set("Running...")
         self.root.update()
+        self.output_text.configure(state='normal')
+        self.output_text.delete(1.0, tk.END)
+        self.output_text.configure(state='disabled')
 
         try:
             # 1. Setup OpenMDAO Problem
@@ -129,9 +153,10 @@ class RamjetApp:
             # Set Target T4 on the Balance RHS (Using 'FAR' balance name now)
             prob.set_val('balance.rhs:FAR', self.t4_var.get(), units='degR')
 
-            # Set Ideal Component Parameters
-            prob.set_val('inlet.ram_recovery', 1.0) 
-            prob.set_val('nozzle.Cv', 1.0)          
+            # Set Component Parameters
+            prob.set_val('inlet.ram_recovery', self.rec_var.get()) 
+            prob.set_val('nozzle.Cv', self.nozz_cv_var.get())     
+            prob.set_val('burner.dPqP', self.burner_dp_var.get())
             
             # 3. Run
             prob.run_model()
@@ -141,11 +166,9 @@ class RamjetApp:
             p3 = prob.get_val('burner.Fl_I:tot:P', units='psi')[0]
             t3 = prob.get_val('burner.Fl_I:tot:T', units='degR')[0]
             t4 = prob.get_val('burner.Fl_O:tot:T', units='degR')[0]
+            p4 = prob.get_val('burner.Fl_O:tot:P', units='psi')[0]
             
-            # 'phi' might not be readily available if we drive FAR directly, 
-            # but we can get FAR (Fuel-Air Ratio)
             far = prob.get_val('balance.FAR')[0]
-            
             fg = prob.get_val('nozzle.Fg', units='lbf')[0]
             
             m_dot = prob.get_val('inlet.Fl_O:stat:W', units='lbm/s')[0]
@@ -158,18 +181,21 @@ class RamjetApp:
             isp = fn / (w_fuel / 3600.0) if w_fuel > 0 else 0.0
 
             # 5. Display
-            res = f"--- SIMULATION RESULTS ---\n"
+            res = f"=== SIMULATION RESULTS ===\n"
             res += f"Net Thrust (Fn):      {fn:.2f} lbf\n"
             res += f"TSFC:                 {tsfc:.4f} (lbm/h)/lbf\n"
             res += f"Specific Impulse:     {isp:.2f} s\n"
             res += f"Ram Drag:             {fram:.2f} lbf\n"
-            res += f"-------------------------\n"
+            res += f"--------------------------\n"
             res += f"Air Mass Flow:        {m_dot:.2f} lbm/s\n"
             res += f"Fuel-Air Ratio:       {far:.5f}\n"
+            res += f"Fuel Flow:            {w_fuel:.2f} lbm/h\n"
+            res += f"--------------------------\n"
             res += f"Burner Inlet P3:      {p3:.2f} psi\n"
             res += f"Burner Inlet T3:      {t3:.2f} degR\n"
+            res += f"Burner Exit P4:       {p4:.2f} psi\n"
             res += f"Burner Exit T4:       {t4:.2f} degR\n"
-            res += f"-------------------------\n"
+            res += f"--------------------------\n"
             res += f"Flight Speed:         {v_flight:.1f} ft/s\n"
             res += f"Ambient Pressure:     {p0:.3f} psi\n"
             
@@ -177,7 +203,6 @@ class RamjetApp:
             self.status_var.set("Success")
 
         except Exception as e:
-            import traceback
             err_msg = f"Error running simulation:\n{str(e)}\n\n{traceback.format_exc()}"
             self.display_output(err_msg)
             self.status_var.set("Error")
